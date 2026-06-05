@@ -57,12 +57,12 @@
         const ctx = canvas.getContext('2d');
         const info = document.getElementById('info');
 
-        // 음역 및 성량 기준 설정 (X축: C2~C6, Y축: 40dB~100dB)
+        // 음역 및 성량 기준 설정 (X축: C2~C6, Y축: 35dB~125dB)
         const MIN_NOTE = 36; // C2
         const MAX_NOTE = 84; // C6
         const NOTE_RANGE = MAX_NOTE - MIN_NOTE;
-        const MIN_DB = 40;
-        const MAX_DB = 100;
+        const MIN_DB = 35;
+        const MAX_DB = 125;
         const DB_RANGE = MAX_DB - MIN_DB;
 
         // 방문한 위치를 기록할 해시 맵 (Key: "노트번호_데시벨")
