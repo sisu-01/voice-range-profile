@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>웹 음역창 측정기 (VRP)</title>
+    <title>웹 음역창 측정기 (VRP) - 고정밀 버전</title>
     <style>
         body {
             margin: 0;
@@ -35,6 +35,7 @@
         canvas { width: 100%; height: 100%; display: block; }
         #info { margin-top: 12px; font-size: 0.95rem; color: #aaa; text-align: center; height: 1.5em; }
     </style>
+    <script src="https://unpkg.com/pitchy@4.0.0/dist/index.umd.js"></script>
 </head>
 <body>
 
@@ -57,31 +58,25 @@
         const ctx = canvas.getContext('2d');
         const info = document.getElementById('info');
 
-        // 음역 및 성량 기준 설정 (X축: C2~C6, Y축: 35dB~125dB)
+        // 축 기준 설정
         const MIN_NOTE = 36; // C2
         const MAX_NOTE = 84; // C6
         const NOTE_RANGE = MAX_NOTE - MIN_NOTE;
-        const MIN_DB = 35;
-        const MAX_DB = 125;
+        const MIN_DB = 35;   
+        const MAX_DB = 125;  
         const DB_RANGE = MAX_DB - MIN_DB;
 
-        // 방문한 위치를 기록할 해시 맵 (Key: "노트번호_데시벨")
         let vrpGrid = {}; 
-
         let audioContext, analyser, dataArray;
         let isRunning = false;
-        let currentPitch = -1, currentDb = -1
-        let lastValidPitch = -1; // 🔥 직전에 검출된 음을 기억할 변수
-        let pitchConfidenceCount = 0; // 🔥 같은 음이 연속으로 몇 번 나왔는지 셀 카운터
+        let currentPitch = -1, currentDb = -1;
 
-        // 피아노 계음 이름 매핑용
         const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
         function getNoteName(midiNote) {
             const octave = Math.floor(midiNote / 12) - 1;
             return NOTE_NAMES[midiNote % 12] + octave;
         }
 
-        // 모바일 해상도 대응 캔버스 리사이징
         function resizeCanvas() {
             const dpr = window.devicePixelRatio || 1;
             const rect = canvas.getBoundingClientRect();
@@ -91,7 +86,6 @@
         }
         window.addEventListener('resize', resizeCanvas);
 
-        // 마이크 시작 버튼 이벤트
         startBtn.addEventListener('click', async () => {
             if (isRunning) return;
             try {
@@ -100,105 +94,60 @@
                 const source = audioContext.createMediaStreamSource(stream);
                 
                 analyser = audioContext.createAnalyser();
-                analyser.fftSize = 2048; // 피치 검출 정밀도 리소스
+                analyser.fftSize = 2048; 
                 dataArray = new Float32Array(analyser.fftSize);
                 source.connect(analyser);
                 
                 isRunning = true;
                 startBtn.style.display = 'none';
-                info.textContent = "아~ 하고 소리를 내보세요!";
+                info.textContent = "소리를 내보세요!";
                 resizeCanvas();
                 updateLoop();
             } catch (err) {
-                alert('마이크 접근에 실패했습니다. HTTPS 연결 상태를 확인하세요: ' + err.message);
+                alert('마이크 접근 실패: ' + err.message);
             }
         });
 
         clearBtn.addEventListener('click', () => { vrpGrid = {}; render(); });
 
-        // 주파수 및 성량 추출 알고리즘 (Autocorrelation)
-        function analyzeAudio(buffer, sampleRate) {
-            const SIZE = buffer.length;
-            let rms = 0;
-            for (let i = 0; i < SIZE; i++) { rms += buffer[i] * buffer[i]; }
-            rms = Math.sqrt(rms / SIZE);
-            
-            if (rms < 0.008) return { pitch: -1, db: -Infinity }; // 너무 작은 소리 제외
-
-            // 실시간 데시벨 계산 (마이크 특성에 맞춘 상용 보정값 +95 가미)
-            let db = Math.round(20 * Math.log10(rms) + 95);
-            db = Math.max(MIN_DB, Math.min(MAX_DB, db));
-
-            // 기본 음고 검출용 자기상관 알고리즘
-            let r1 = 0, r2 = SIZE - 1, thres = 0.2;
-            for (let i = 0; i < SIZE / 2; i++) { if (Math.abs(buffer[i]) < thres) { r1 = i; break; } }
-            for (let i = SIZE - 1; i >= SIZE / 2; i--) { if (Math.abs(buffer[i]) < thres) { r2 = i; break; } }
-            const buf = buffer.slice(r1, r2);
-            const len = buf.length;
-
-            let bestOffset = -1, bestCorrelation = 0;
-            const maxSamples = Math.floor(len / 2);
-            
-            // 인간 목소리 유효 범위 탐색 (약 60Hz ~ 1200Hz 제한)
-            const minOffset = Math.floor(sampleRate / 1200);
-            const maxOffset = Math.min(maxSamples, Math.floor(sampleRate / 60));
-
-            for (let offset = minOffset; offset < maxOffset; offset++) {
-                let correlation = 0;
-                for (let i = 0; i < maxSamples; i++) {
-                    correlation += Math.abs(buf[i] - buf[i + offset]);
-                }
-                correlation = 1 - (correlation / maxSamples);
-                if (correlation > bestCorrelation) {
-                    bestCorrelation = correlation;
-                    bestOffset = offset;
-                }
-            }
-
-            if (bestCorrelation > 0.85) {
-                return { pitch: sampleRate / bestOffset, db: db };
-            }
-            return { pitch: -1, db: db };
-        }
-
         function updateLoop() {
             requestAnimationFrame(updateLoop);
             if (!isRunning) return;
-        
+
             analyser.getFloatTimeDomainData(dataArray);
-            const result = analyzeAudio(dataArray, audioContext.sampleRate);
-        
-            if (result.pitch !== -1) {
-                // 주파수 -> MIDI Note 번호 공식 변환
-                const midiNote = Math.round(12 * (Math.log(result.pitch / 440) / Math.log(2))) + 69;
-                if (midiNote >= MIN_NOTE && midiNote <= MAX_NOTE) {
-                    
-                    // 🔥 [옥타브 필터 로직 추가]
-                    // 직전 음과 비교했을 정확히 '한 옥타브(12키)' 이상 급격하게 튀면, 
-                    // 순간적인 배음 노이즈일 확률이 높으므로 신뢰도 카운트가 쌓일 때까지 검증합니다.
-                    if (lastValidPitch !== -1 && Math.abs(midiNote - lastValidPitch) >= 11) {
-                        pitchConfidenceCount++;
-                        // 순간적으로 튄 음이 4프레임(약 0.06초) 이상 지속되지 않으면 그리드에 그리지 않고 무시
-                        if (pitchConfidenceCount < 4) {
-                            return; 
-                        }
-                    } else {
-                        pitchConfidenceCount = 0; // 정상적인 부드러운 음 이동이면 카운트 초기화
-                    }
-        
+            
+            // 1. 성량(dB) 계산
+            let rms = 0;
+            for (let i = 0; i < dataArray.length; i++) { rms += dataArray[i] * dataArray[i]; }
+            rms = Math.sqrt(rms / dataArray.length);
+
+            // 숨소리나 미세 소음 커트라인 강화
+            if (rms < 0.01) {
+                currentPitch = -1; currentDb = -1;
+                render();
+                return;
+            }
+
+            let db = Math.round(20 * Math.log10(rms) + 95);
+            db = Math.max(MIN_DB, Math.min(MAX_DB, db));
+
+            // 2. 🔥 Pitchy 라이브러리의 YIN 알고리즘으로 주파수 추출
+            // 오차 확률(Clarity)이 0.85 이상인 완벽한 알맹이 소리만 필터링합니다.
+            const detector = Pitchy.PitchDetector.forFloat32Array(analyser.fftSize);
+            const [pitch, clarity] = detector.findPitch(dataArray, audioContext.sampleRate);
+
+            if (pitch > 0 && clarity > 0.85) {
+                const midiNote = Math.round(12 * (Math.log(pitch / 440) / Math.log(2))) + 69;
+                
+                // 남성 현실 음역대 바운더리 체크 (노이즈로 튀는 초고음 차단)
+                if (midiNote >= MIN_NOTE && midiNote <= MAX_NOTE && pitch < 1200) {
                     currentPitch = midiNote;
-                    currentDb = result.db;
-                    lastValidPitch = midiNote; // 현재 음을 다음 프레임의 비교용으로 저장
-        
-                    // 그리드 좌표 저장 키 활성화
+                    currentDb = db;
                     vrpGrid[`${currentPitch}_${currentDb}`] = true;
-                    info.textContent = `현재 상태: ${getNoteName(currentPitch)} (${Math.round(result.pitch)}Hz) / ${currentDb} dB`;
+                    info.textContent = `현재 상태: ${getNoteName(currentPitch)} (${Math.round(pitch)}Hz) / ${currentDb} dB (신뢰도: ${Math.round(clarity*100)}%)`;
                 }
             } else {
                 currentPitch = -1; currentDb = -1;
-                // 소리가 끊기면 이전 기억도 초기화
-                lastValidPitch = -1;
-                pitchConfidenceCount = 0;
             }
             render();
         }
@@ -209,24 +158,22 @@
             if (W === 0 || H === 0) return;
 
             const dpr = window.devicePixelRatio || 1;
-            // 피아노 건반 영역 확보를 위해 하단 패딩을 40에서 75로 확장
             const padLeft = 55 * dpr; const padBottom = 75 * dpr;
             const paddingTop = 20 * dpr; const padRight = 20 * dpr;
             const graphW = W - padLeft - padRight; const graphH = H - paddingTop - padBottom;
 
-            // 1. 그리드 레이아웃 및 텍스트 그리기
             ctx.strokeStyle = '#2c2c2c'; ctx.lineWidth = 1 * dpr;
             ctx.fillStyle = '#888'; ctx.font = `${11 * dpr}px sans-serif`;
             ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
 
-            // Y축 (데시벨 격자선)
-            for (let db = MIN_DB; db <= MAX_DB; db += 10) {
+            // Y축 (데시벨)
+            for (let db = MIN_DB; db <= MAX_DB; db += 15) {
                 const y = paddingTop + graphH - ((db - MIN_DB) / DB_RANGE) * graphH;
                 ctx.beginPath(); ctx.moveTo(padLeft, y); ctx.lineTo(W - padRight, y); ctx.stroke();
                 ctx.fillText(`${db}dB`, padLeft - 8, y);
             }
 
-            // X축 (피아노 주요 옥타브 가이드 실선만 먼저 드로잉)
+            // X축 (가이드선)
             for (let note = MIN_NOTE; note <= MAX_NOTE; note++) {
                 const x = padLeft + ((note - MIN_NOTE) / NOTE_RANGE) * graphW;
                 if (note % 12 === 0) { 
@@ -235,7 +182,7 @@
                 }
             }
 
-            // 2. 누적 데이터 페인팅 (초록 픽셀 블록)
+            // 데이터 블록
             const cellW = graphW / NOTE_RANGE;
             const cellH = graphH / DB_RANGE;
             ctx.fillStyle = 'rgba(0, 255, 100, 0.75)';
@@ -246,45 +193,30 @@
                 ctx.fillRect(x, y - cellH, cellW + 0.5, cellH + 0.5); 
             }
 
-            // 3. 하단 피아노 건반 렌더링 시스템
-            const pianoY = paddingTop + graphH + 8 * dpr; // 건반 시작 Y 좌표
-            const pianoH = 30 * dpr;                       // 건반 전체 높이
-            const blackKeys = [1, 3, 6, 8, 10];            // 흑건 단어 구조 배열 (C#=1, D#=3...)
+            // 피아노 건반
+            const pianoY = paddingTop + graphH + 8 * dpr; 
+            const pianoH = 30 * dpr;                       
+            const blackKeys = [1, 3, 6, 8, 10];            
 
-            // [Pass 1] 백건(White Keys) 먼저 그리기
             for (let note = MIN_NOTE; note <= MAX_NOTE; note++) {
-                const isBlack = blackKeys.includes(note % 12);
-                if (!isBlack) {
+                if (!blackKeys.includes(note % 12)) {
                     const x = padLeft + (note - MIN_NOTE) * cellW;
-                    
-                    // 현재 소리내는 음이면 빨갛게 활성화, 아니면 흰색
                     ctx.fillStyle = (currentPitch === note) ? '#ff3333' : '#ffffff';
                     ctx.fillRect(x, pianoY, cellW, pianoH);
-                    
-                    ctx.strokeStyle = '#1a1a1a';
-                    ctx.lineWidth = 1 * dpr;
-                    ctx.strokeRect(x, pianoY, cellW, pianoH);
+                    ctx.strokeStyle = '#1a1a1a'; ctx.strokeRect(x, pianoY, cellW, pianoH);
                 }
             }
-
-            // [Pass 2] 흑건(Black Keys) 위에 덮어 그리기
             for (let note = MIN_NOTE; note <= MAX_NOTE; note++) {
-                const isBlack = blackKeys.includes(note % 12);
-                if (isBlack) {
+                if (blackKeys.includes(note % 12)) {
                     const x = padLeft + (note - MIN_NOTE) * cellW;
-                    
-                    // 현재 소리내는 음이면 연한 빨강, 아니면 검은색계열
                     ctx.fillStyle = (currentPitch === note) ? '#ff6666' : '#333333';
-                    ctx.fillRect(x, pianoY, cellW, pianoH * 0.65); // 흑건은 통상 65% 높이
-                    
-                    ctx.strokeStyle = '#1a1a1a';
-                    ctx.strokeRect(x, pianoY, cellW, pianoH * 0.65);
+                    ctx.fillRect(x, pianoY, cellW, pianoH * 0.65);
+                    ctx.strokeStyle = '#1a1a1a'; ctx.strokeRect(x, pianoY, cellW, pianoH * 0.65);
                 }
             }
 
-            // [Pass 3] 건반 하단 옥타브 텍스트 라벨링 (C2, C3, C4...)
-            ctx.fillStyle = '#888';
-            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            // 라벨링
+            ctx.fillStyle = '#888'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
             for (let note = MIN_NOTE; note <= MAX_NOTE; note++) {
                 const x = padLeft + ((note - MIN_NOTE) / NOTE_RANGE) * graphW;
                 if (note % 12 === 0) { 
@@ -292,11 +224,10 @@
                 }
             }
 
-            // 4. 현재 실시간 보컬 위치 포인터 (빨간색 조준선)
+            // 조준선
             if (currentPitch !== -1 && currentDb !== -1) {
                 const curX = padLeft + (currentPitch - MIN_NOTE) * cellW + cellW / 2;
                 const curY = paddingTop + graphH - (currentDb - MIN_DB) * cellH - cellH / 2;
-
                 ctx.strokeStyle = '#ff3333'; ctx.lineWidth = 2 * dpr;
                 ctx.beginPath();
                 ctx.moveTo(curX - 12, curY); ctx.lineTo(curX + 12, curY);
@@ -305,7 +236,6 @@
             }
         }
 
-        // 첫 빈 그리드 셋업
         resizeCanvas();
     </script>
 </body>
