@@ -70,7 +70,9 @@
 
         let audioContext, analyser, dataArray;
         let isRunning = false;
-        let currentPitch = -1, currentDb = -1;
+        let currentPitch = -1, currentDb = -1
+        let lastValidPitch = -1; // 🔥 직전에 검출된 음을 기억할 변수
+        let pitchConfidenceCount = 0; // 🔥 같은 음이 연속으로 몇 번 나왔는지 셀 카운터
 
         // 피아노 계음 이름 매핑용
         const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -162,23 +164,41 @@
         function updateLoop() {
             requestAnimationFrame(updateLoop);
             if (!isRunning) return;
-
+        
             analyser.getFloatTimeDomainData(dataArray);
             const result = analyzeAudio(dataArray, audioContext.sampleRate);
-
+        
             if (result.pitch !== -1) {
                 // 주파수 -> MIDI Note 번호 공식 변환
                 const midiNote = Math.round(12 * (Math.log(result.pitch / 440) / Math.log(2))) + 69;
                 if (midiNote >= MIN_NOTE && midiNote <= MAX_NOTE) {
+                    
+                    // 🔥 [옥타브 필터 로직 추가]
+                    // 직전 음과 비교했을 정확히 '한 옥타브(12키)' 이상 급격하게 튀면, 
+                    // 순간적인 배음 노이즈일 확률이 높으므로 신뢰도 카운트가 쌓일 때까지 검증합니다.
+                    if (lastValidPitch !== -1 && Math.abs(midiNote - lastValidPitch) >= 11) {
+                        pitchConfidenceCount++;
+                        // 순간적으로 튄 음이 4프레임(약 0.06초) 이상 지속되지 않으면 그리드에 그리지 않고 무시
+                        if (pitchConfidenceCount < 4) {
+                            return; 
+                        }
+                    } else {
+                        pitchConfidenceCount = 0; // 정상적인 부드러운 음 이동이면 카운트 초기화
+                    }
+        
                     currentPitch = midiNote;
                     currentDb = result.db;
-
+                    lastValidPitch = midiNote; // 현재 음을 다음 프레임의 비교용으로 저장
+        
                     // 그리드 좌표 저장 키 활성화
                     vrpGrid[`${currentPitch}_${currentDb}`] = true;
                     info.textContent = `현재 상태: ${getNoteName(currentPitch)} (${Math.round(result.pitch)}Hz) / ${currentDb} dB`;
                 }
             } else {
                 currentPitch = -1; currentDb = -1;
+                // 소리가 끊기면 이전 기억도 초기화
+                lastValidPitch = -1;
+                pitchConfidenceCount = 0;
             }
             render();
         }
